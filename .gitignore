@@ -1,0 +1,12 @@
+*_01/
+*cp/
+*.pth.tar
+videos/
+output*/
+*.png
+02*/
+03*/
+04*/
+test_data/
+tmux*
+__pycache__/

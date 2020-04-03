@@ -44,13 +44,15 @@ class BasicBlock(nn.Module):
         if residual is None:
             residual = x
 
+        # print('basic0',x.shape, residual.shape)
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
 
         out = self.conv2(out)
         out = self.bn2(out)
-
+        
+        # print("basic", x.shape, residual.shape)
         out += residual
         out = self.relu(out)
 
@@ -80,7 +82,7 @@ class Bottleneck(nn.Module):
     def forward(self, x, residual=None):
         if residual is None:
             residual = x
-
+        # print('0',x.shape, residual.shape)
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
@@ -92,6 +94,7 @@ class Bottleneck(nn.Module):
         out = self.conv3(out)
         out = self.bn3(out)
 
+        # print(out.shape, residual.shape)
         out += residual
         out = self.relu(out)
 
@@ -228,6 +231,9 @@ class DLA(nn.Module):
         self.return_levels = return_levels
         self.num_classes = num_classes
         self.base_layer = nn.Sequential(
+            # TODO
+            # nn.Conv2d(1, channels[0], kernel_size=7, stride=1,
+            #           padding=3, bias=False),
             nn.Conv2d(3, channels[0], kernel_size=7, stride=1,
                       padding=3, bias=False),
             BatchNorm(channels[0]),
@@ -289,8 +295,12 @@ class DLA(nn.Module):
 
     def forward(self, x):
         y = []
+        # print('b_base', x.shape)
         x = self.base_layer(x)
+        #print('b_0', x.shape)
         for i in range(6):
+            # print(i)
+            # print('b' + str(i), x.shape)
             x = getattr(self, 'level{}'.format(i))(x)
             y.append(x)
         if self.return_levels:
