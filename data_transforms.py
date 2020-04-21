@@ -131,7 +131,7 @@ class RandomCrop(object):
             self.size = size
 
     def __call__(self, image, label, *args):
-        assert label is None or image.size == label.size
+        # assert label is None or image.size == label.size #TODO
 
         w, h = image.size
         tw, th = self.size
@@ -144,7 +144,7 @@ class RandomCrop(object):
             bottom = th - h - top
         if left > 0 or right > 0 or top > 0 or bottom > 0:
             label = pad_image(
-                'constant', label, top, bottom, left, right, value=255)
+                'constant', label, top, bottom, left, right, value=255) #TODO 
             image = pad_image(
                 'reflection', image, top, bottom, left, right)
         w, h = image.size
@@ -198,7 +198,7 @@ class RandomRotate(object):
         angle = random.randint(0, self.angle * 2) - self.angle
 
         if label is not None:
-            label = pad_image('constant', label, h, h, w, w, value=255)
+            label = pad_image('constant', label, h, h, w, w, value=255) #TODO
             label = label.rotate(angle, resample=Image.NEAREST)
             label = label.crop((w, h, w + w, h + h))
 
@@ -217,6 +217,20 @@ class RandomHorizontalFlip(object):
             image = image.transpose(Image.FLIP_LEFT_RIGHT)
             if label:
                 label = label.transpose(Image.FLIP_LEFT_RIGHT)
+        if label:
+            return image, label
+        else:
+            return image,
+
+class RandomVerticalFlip(object):
+    """Randomly horizontally flips the given PIL.Image with a probability of 0.5
+    """
+
+    def __call__(self, image, label=None):
+        if random.random() < 0.5:
+            image = image.transpose(Image.FLIP_TOP_BOTTOM)
+            if label:
+                label = label.transpose(Image.FLIP_TOP_BOTTOM)
         if label:
             return image, label
         else:

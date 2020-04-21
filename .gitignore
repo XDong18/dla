@@ -10,3 +10,8 @@ output*/
 test_data/
 tmux*
 __pycache__/
+*.pth
+image*/
+videos/
+runs/
+.vscode/

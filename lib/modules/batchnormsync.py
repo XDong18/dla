@@ -1,9 +1,9 @@
 from queue import Queue
-
 import torch
 from torch.nn import Module
 from torch.nn.parameter import Parameter
 from functions.batchnormp import BatchNormPFunction
+# from functions import batchnormp
 
 
 class BatchNormSync(Module):

@@ -16,6 +16,7 @@ from os.path import exists, join, split, dirname
 from os import listdir
 import scipy.ndimage
 from matplotlib import pyplot as plt
+from add_mask import add_mask
 
 
 def sample(img, rate, value):
@@ -79,6 +80,11 @@ def predict_img(model,
         # image_var = Variable(input_img, requires_grad=False, volatile=True)
         final = model(input_img)[0]
         _, pred = torch.max(final, 1)
+        pred[torch.where(pred==1)] = 0
+        pred[torch.where(pred==13)] = 1
+        pred[torch.where(pred==14)] = 1
+        pred[torch.where(pred==15)] = 1
+        pred[torch.where(pred!=1)] = 0
         pred = pred.cpu().data.numpy()
 
     save_output_images(pred, name, output_dir)
@@ -111,16 +117,18 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     if args.input_dir != '':
-        in_files = listdir(args.input_dir)
+        in_files = sorted(listdir(args.input_dir))
     else:
         in_files = args.input
 
     single_model = dla_up.__dict__.get(args.arch)(
         args.classes, down_ratio=args.down)
-    model = torch.nn.DataParallel(single_model).cuda()
     checkpoint = torch.load(args.resume)
-    model.load_state_dict(checkpoint['state_dict'])
-    print(checkpoint['best_prec1'])
+    single_model.load_state_dict(checkpoint)
+    # single_model.load_state_dict(checkpoint['state_dict'])
+    model = torch.nn.DataParallel(single_model).cuda() #TODO
+
+    # print(checkpoint['best_prec1'])
 
     print("Model loaded !")
 
@@ -150,3 +158,5 @@ if __name__ == "__main__":
                     full_img=img,
                     name=fname,
                     output_dir=args.out_dir)
+    
+    add_mask(args.out_dir, args.input_dir)

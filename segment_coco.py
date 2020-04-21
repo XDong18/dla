@@ -25,8 +25,11 @@ import dataset
 from torch.utils.tensorboard import SummaryWriter
 from ptc_dataset import BasicDataset
 from dataset_trans import BasicDataset #TODO
-
+from dataset_coco import COCOSeg
+import copy
 from torch.utils.data import DataLoader, random_split
+import sys
+sys.path.append('lib/')
 
 try:
     from modules import batchnormsync
@@ -39,7 +42,7 @@ logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-global_step = 65560  #TODO
+global_step = 0  #TODO
 
 CITYSCAPE_PALLETE = np.asarray([
     [128, 64, 128],
@@ -62,6 +65,13 @@ CITYSCAPE_PALLETE = np.asarray([
     [0, 0, 230],
     [119, 11, 32],
     [0, 0, 0]], dtype=np.uint8)
+
+
+def f_print(*obj):
+    fn='./output.log'
+    print(obj)
+    with open(fn, 'a+') as f:
+        print(obj, file=f)
 
 
 class SegList(torch.utils.data.Dataset):
@@ -165,6 +175,7 @@ def validate(val_loader, model, criterion, eval_score=None, print_freq=10, citys
     score = AverageMeter()
     pos_scores = AverageMeter()
     neg_scores = AverageMeter()
+    recall_scores = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
@@ -178,15 +189,6 @@ def validate(val_loader, model, criterion, eval_score=None, print_freq=10, citys
             input = input.cuda().float()
             # target = target.cuda(async=True)
             target = target.cuda().long()
-            #TODO changed: delete variable
-            # input_var = torch.autograd.Variable(input, volatile=True)
-            # target_var = torch.autograd.Variable(target, volatile=True)
-
-
-            # compute output
-            # TODO changed
-            # output = model(input_var)[0]
-            # loss = criterion(output, target_var)
             output = model(input)[0]
             # print("model done") 
             # print(output)
@@ -201,9 +203,8 @@ def validate(val_loader, model, criterion, eval_score=None, print_freq=10, citys
             # print("model done")
             if eval_score is not None:
                 # TODO cahnged
-                score.update(eval_score(output, target, cityscape), input.size(0))
-                pos_scores.update(posIOU(output, target, cityscape), input.size(0))
-                neg_scores.update(negIOU(output, target, cityscape), input.size(0))
+                score.update(eval_score(output, target), input.size(0))
+                recall_scores.update(recall(output, target), input.size(0))
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -214,14 +215,13 @@ def validate(val_loader, model, criterion, eval_score=None, print_freq=10, citys
                     'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                     'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                     'Score {score.val:.3f} ({score.avg:.3f})\t'
-                    'pos_Score {pos_top1.val:.3f} ({pos_top1.avg:.3f})\t'
-                    'neg_Score {neg_top1.val:.3f} ({neg_top1.avg:.3f})'.format(
+                    'recall_score {recall_score.val:.3f} ({recall_score.avg:.3f})'.format(
                     i, len(val_loader), batch_time=batch_time, loss=losses,
-                    score=score, pos_top1=pos_scores, neg_top1=neg_scores)) #TODO , flush=True
+                    score=score, recall_score=recall_scores)) #TODO , flush=True
     
-    print(' * Score {top1.avg:.3f}\tpos_Score{pos_top1.avg:.3f}\tneg_Score{neg_top1.avg:.3f}'.format(top1=score, pos_top1=pos_scores, neg_top1=neg_scores))
+    print(' * Score {top1.avg:.3f}\recall_score{recall_score.avg:.3f}'.format(top1=score, recall_score=recall_scores))
 
-    return score.avg, losses.avg
+    return score.avg, losses.avg, recall_scores.avg
 
 
 class AverageMeter(object):
@@ -251,32 +251,35 @@ def accuracy(output, target):
     target = target.view(1, -1)
     correct = pred.eq(target)
     # correct = correct[target != 255]
-    correct = correct[target != -1]
+    correct = correct[target != 255]
 
     correct = correct.view(-1)
-    score = correct.float().sum(0).mul(100.0 / correct.size(0))
+    if correct.size(0)!=0:
+        score = correct.float().sum(0).mul(100.0 / correct.size(0))
+    else:
+        return 100.
     # return score.data[0]
     return score.item()
 
 
-def recall(output, target):
+def recall(output, t_target):
     """Computes the precision@k for the specified values of k"""
     # batch_size = target.size(0) * target.size(1) * target.size(2)
     _, pred = output.max(1)
     pred = pred.view(1, -1)
-    target = target.view(1, -1)
-    positive_target = target[target == 1]
-    positive_pred = pred[target == 1]
+    target = copy.deepcopy(t_target)
+    target[torch.where(target==0)] = 255 #Ignore background
 
-    correct = positive_pred.eq(positive_target)
+    target = target.view(1, -1)
+    correct = pred.eq(target)
     # correct = correct[target != 255]
-    # correct = correct[target != -1]
+    correct = correct[target != 255]
+
     correct = correct.view(-1)
-    if correct.size(0):
+    if correct.size(0)!=0:
         score = correct.float().sum(0).mul(100.0 / correct.size(0))
     else:
-        score = 100.0
-        return score
+        return 100.
     # return score.data[0]
     return score.item()
 
@@ -285,14 +288,9 @@ def mIOU(output, target, cityscape=False):
     pred = pred.view(1, -1)
     target = target.view(1, -1)
     if cityscape:
-        pred[torch.where(pred==1)] = 0
-        # pred[torch.where(pred==13)] = 1
-        # pred[torch.where(pred==14)] = 1
-        # pred[torch.where(pred==15)] = 1
-        # pred[torch.where(pred!=1)] = 0
-        pred[torch.where(pred==3)] = 1
-        pred[torch.where(pred==6)] = 1
-        pred[torch.where(pred==8)] = 1
+        pred[torch.where(pred==13)] = 1
+        pred[torch.where(pred==14)] = 1
+        pred[torch.where(pred==15)] = 1
         pred[torch.where(pred!=1)] = 0
         
     positive_target = target[target == 1]
@@ -335,19 +333,14 @@ def posIOU(output, target, cityscape=False):
     pred = pred.view(1, -1)
     target = target.view(1, -1)
     if cityscape:
-        pred[torch.where(pred==1)] = 0
-        # pred[torch.where(pred==13)] = 1
-        # pred[torch.where(pred==14)] = 1
-        # pred[torch.where(pred==15)] = 1
-        # pred[torch.where(pred!=1)] = 0
-        pred[torch.where(pred==3)] = 1
-        pred[torch.where(pred==6)] = 1
-        pred[torch.where(pred==8)] = 1
+        pred[torch.where(pred==13)] = 1
+        pred[torch.where(pred==14)] = 1
+        pred[torch.where(pred==15)] = 1
         pred[torch.where(pred!=1)] = 0
-
     positive_target = target[target == 1]
     positive_pred = pred[target == 1]
-
+    # negtive_target = target[target == 0]
+    # negtive_pred = pred[target == 0]
 
     positive_union = positive_pred.eq(positive_target)
     positive_union = positive_union.view(-1).float().sum(0)
@@ -363,6 +356,20 @@ def posIOU(output, target, cityscape=False):
     else:
         pos_score = 100.0
 
+    # negtive_union = negtive_pred.eq(negtive_target)
+    # negtive_union = negtive_union.view(-1).float().sum(0)
+
+    # negtive_target = target[target != -1]
+    # negtive_pred = pred[target != -1]
+    # neg_section_pred = negtive_pred.eq(0).view(-1).float().sum(0)
+    # neg_section_target = negtive_target.eq(0).view(-1).float().sum(0)
+    # neg_intersection = neg_section_pred + neg_section_target - negtive_union
+
+    # if neg_intersection>0:
+    #     neg_score = negtive_union.mul(100.0 / neg_intersection).item()
+    # else:
+    #     neg_score = 100.0
+    #print("pos", pos_score, "neg", neg_score)
     return pos_score
 
 def negIOU(output, target, cityscape=False):
@@ -370,18 +377,28 @@ def negIOU(output, target, cityscape=False):
     pred = pred.view(1, -1)
     target = target.view(1, -1)
     if cityscape:
-        pred[torch.where(pred==1)] = 0
-        # pred[torch.where(pred==13)] = 1
-        # pred[torch.where(pred==14)] = 1
-        # pred[torch.where(pred==15)] = 1
-        # pred[torch.where(pred!=1)] = 0
-        pred[torch.where(pred==3)] = 1
-        pred[torch.where(pred==6)] = 1
-        pred[torch.where(pred==8)] = 1
+        pred[torch.where(pred==13)] = 1
+        pred[torch.where(pred==14)] = 1
+        pred[torch.where(pred==15)] = 1
         pred[torch.where(pred!=1)] = 0
-
+    # positive_target = target[target == 1]
+    # positive_pred = pred[target == 1]
     negtive_target = target[target == 0]
     negtive_pred = pred[target == 0]
+
+    # positive_union = positive_pred.eq(positive_target)
+    # positive_union = positive_union.view(-1).float().sum(0)
+
+    # positive_target = target[target != -1]
+    # positive_pred = pred[target != -1]
+    # pos_section_pred = positive_pred.eq(1).view(-1).float().sum(0)
+    # pos_section_target = positive_target.eq(1).view(-1).float().sum(0)
+    # pos_intersection = pos_section_pred + pos_section_target - positive_union
+
+    # if pos_intersection>0:
+    #     pos_score = positive_union.mul(100.0 / pos_intersection).item()
+    # else:
+    #     pos_score = 100.0
 
     negtive_union = negtive_pred.eq(negtive_target)
     negtive_union = negtive_union.view(-1).float().sum(0)
@@ -408,6 +425,7 @@ def train(train_loader, model, criterion, optimizer, epoch, lr_scheduler, writer
     pos_scores = AverageMeter()
     neg_scores = AverageMeter()
     scores = AverageMeter()
+    recall_score = AverageMeter()
 
     global global_step
     # switch to train mode
@@ -442,8 +460,7 @@ def train(train_loader, model, criterion, optimizer, epoch, lr_scheduler, writer
         losses.update(loss.item(), input.size(0))
         if eval_score is not None:
             scores.update(eval_score(output, target_var), input.size(0))
-            pos_scores.update(posIOU(output, target_var), input.size(0))
-            neg_scores.update(negIOU(output, target_var), input.size(0))
+            recall_score.update(recall(output, target_var), input.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -461,10 +478,9 @@ def train(train_loader, model, criterion, optimizer, epoch, lr_scheduler, writer
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'Score {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'pos_Score {pos_top1.val:.3f} ({pos_top1.avg:.3f})\t'
-                  'neg_Score {neg_top1.val:.3f} ({neg_top1.avg:.3f})'.format(
+                  'recall_Score {recall_score.val:.3f} ({recall_score.avg:.3f})'.format(
                     epoch, i, len(train_loader), batch_time=batch_time,
-                    data_time=data_time, loss=losses, top1=scores, pos_top1=pos_scores, neg_top1=neg_scores))
+                    data_time=data_time, loss=losses, top1=scores, recall_score=recall_score))
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -475,13 +491,15 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
 
 
 def train_seg(args):
-    writer = SummaryWriter(log_dir= args.log)
+    writer = SummaryWriter(comment = args.log)
     batch_size = args.batch_size
     num_workers = args.workers
     crop_size = args.crop_size
     checkpoint_dir = args.checkpoint_dir
 
     print(' '.join(sys.argv))
+    # logger.info(' '.join(sys.argv))
+
 
     for k, v in args.__dict__.items():
         print(k, ':', v)
@@ -492,21 +510,20 @@ def train_seg(args):
         classes=args.classes, down_ratio=args.down)
     model = torch.nn.DataParallel(single_model).cuda()
     print('model_created')
-    if args.edge_weight > 0:
+    if args.bg_weight > 0:
+        weight_array = np.ones(args.classes, dtype=np.float32)
+        weight_array[0] = args.bg_weight
         weight = torch.from_numpy(
-            np.array([1, args.edge_weight], dtype=np.float32))
+            weight_array)
         # criterion = nn.NLLLoss2d(ignore_index=255, weight=weight)
-        criterion = nn.NLLLoss2d(ignore_index=-1, weight=weight)
+        criterion = nn.NLLLoss2d(ignore_index=255, weight=weight)
     else:
         # criterion = nn.NLLLoss2d(ignore_index=255)
-        criterion = nn.NLLLoss2d(ignore_index=-1)
+        criterion = nn.NLLLoss2d(ignore_index=255)
 
     criterion.cuda()
 
-    #data_dir = args.data_dir
-    # val_percent = args.val / 100
-    # info = dataset.load_dataset_info(data_dir)
-    # normalize = transforms.Normalize(mean=info.mean, std=info.std)
+
     t = []
     if args.random_rotate > 0:
         t.append(transforms.RandomRotate(args.random_rotate))
@@ -517,42 +534,33 @@ def train_seg(args):
         t.append(transforms.RandomJitter(0.4, 0.4, 0.4))
     t.extend([transforms.RandomHorizontalFlip()]) #TODO
 
-    dir_img = '/shared/xudongliu/data/argoverse-tracking/argo_track/train/image_02/'
-    dir_mask = '/shared/xudongliu/data/argoverse-tracking/argo_track/train/' + args.target + '/'
-    my_train = BasicDataset(dir_img, dir_mask, transforms.Compose(t), is_train=True)
-    
-    val_dir_img = '/shared/xudongliu/data/argoverse-tracking/argo_track/val/image_02/'
-    val_dir_mask = '/shared/xudongliu/data/argoverse-tracking/argo_track/val/' + args.target + '/'
-    my_val = BasicDataset(val_dir_img, val_dir_mask, None, is_train=False)
+    t_val = []
+    t_val.append(transforms.RandomCrop(crop_size))
 
-    # n_val = int(len(mydataset) * val_percent)
-    # n_train = len(mydataset) - n_val
-    # my_train, my_val = random_split(mydataset, [n_train, n_val])
+    train_json = '/shared/xudongliu/COCO/annotation2017/annotations/instances_train2017.json'
+    train_root = '/shared/xudongliu/COCO/train2017/train2017'
+    my_train = COCOSeg(train_root, train_json, transforms.Compose(t), is_train=True)
+    
+    val_json = '/shared/xudongliu/COCO/annotation2017/annotations/instances_val2017.json'
+    val_root = '/shared/xudongliu/COCO/2017val/val2017'
+    my_val = COCOSeg(val_root, val_json, transforms.Compose(t_val), is_train=True)
+
+  
 
     train_loader = torch.utils.data.DataLoader(
-        # SegList(data_dir, 'train', transforms.Compose(t),
-        #         binary=(args.classes == 2)),
-        my_train,
-        batch_size=batch_size, shuffle=True, num_workers=num_workers,
+        my_train, batch_size=batch_size, shuffle=True, num_workers=num_workers,
         pin_memory=True
     )
     val_loader = torch.utils.data.DataLoader(
-        # SegList(data_dir, 'val', transforms.Compose([
-        #     transforms.RandomCrop(crop_size),
-        #     # transforms.RandomHorizontalFlip(),
-        #     transforms.ToTensor(),
-        #     normalize,
-        # ]),
-        # binary=(args.classes == 2)),
-        my_val, batch_size=4, shuffle=False, num_workers=num_workers,pin_memory=True) #TODO  batch_size
+        my_val, batch_size=20, shuffle=False, num_workers=num_workers,pin_memory=True) #TODO  batch_size
     print("loader created")
-    # optimizer = torch.optim.SGD(single_model.optim_parameters(),
-    #                             args.lr,
-    #                             momentum=args.momentum,
-    #                             weight_decay=args.weight_decay)
     
-    optimizer = torch.optim.Adam(single_model.optim_parameters(),
-                                args.lr,
+    
+    # optimizer = torch.optim.Adam(single_model.optim_parameters(),
+    #                             args.lr,
+    #                              weight_decay=args.weight_decay) #TODO adam optimizer
+    optimizer = torch.optim.SGD(single_model.optim_parameters(),
+                                args.lr,momentum=args.momentum,
                                  weight_decay=args.weight_decay) #TODO adam optimizer
     
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=32) #TODO
@@ -574,12 +582,12 @@ def train_seg(args):
             print("=> no checkpoint found at '{}'".format(args.resume))
 
     if args.evaluate:
-        validate(val_loader, model, criterion, eval_score=mIOU)
+        validate(val_loader, model, criterion, eval_score=accuracy)
         return
 
     # TODO test val
     # print("test val")
-    # prec1 = validate(val_loader, model, criterion, eval_score=mIOU)
+    # prec1 = validate(val_loader, model, criterion, eval_score=accuracy)
 
     for epoch in range(start_epoch, args.epochs):
         lr = adjust_learning_rate(args, optimizer, epoch)
@@ -587,7 +595,7 @@ def train_seg(args):
         # train for one epoch
         
         train(train_loader, model, criterion, optimizer, epoch, lr_scheduler,
-              eval_score=mIOU, writer=writer)
+              eval_score=accuracy, writer=writer)
 
         checkpoint_path = os.path.join(checkpoint_dir,'checkpoint_{}.pth.tar'.format(epoch))
         save_checkpoint({
@@ -597,11 +605,12 @@ def train_seg(args):
         }, is_best=False, filename=checkpoint_path)
 
         # evaluate on validation set
-        prec1, loss_val = validate(val_loader, model, criterion, eval_score=mIOU)
+        prec1, loss_val, recall_val = validate(val_loader, model, criterion, eval_score=accuracy)
         is_best = prec1 > best_prec1
         best_prec1 = max(prec1, best_prec1)
-        writer.add_scalar('mIoU/epoch', prec1, epoch+1)
+        writer.add_scalar('accuracy/epoch', prec1, epoch+1)
         writer.add_scalar('loss/epoch', loss_val, epoch+1)
+        writer.add_scalar('recall/epoch', recall_val, epoch+1)
 
         checkpoint_path = os.path.join(checkpoint_dir,'checkpoint_{}.pth.tar'.format(epoch))
         save_checkpoint({
@@ -890,11 +899,11 @@ def parse_args():
     parser.add_argument('--arch')
     parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                         help='input batch size for training (default: 64)')
-    parser.add_argument('--train-samples', default=16000, type=int)
+    # parser.add_argument('--train-samples', default=16000, type=int)
     parser.add_argument('--loss', default='l1', type=str)
-    parser.add_argument('--test-batch-size', type=int, default=1000,
-                        metavar='N',
-                        help='input batch size for testing (default: 1000)')
+    # parser.add_argument('--test-batch-size', type=int, default=1000,
+    #                     metavar='N',
+    #                     help='input batch size for testing (default: 1000)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N',
                         help='number of epochs to train (default: 10)')
     parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
@@ -931,14 +940,13 @@ def parse_args():
     parser.add_argument('--random-color', action='store_true', default=False)
     parser.add_argument('--save-freq', default=10, type=int)
     parser.add_argument('--ms', action='store_true', default=False)
-    parser.add_argument('--edge-weight', type=int, default=-1)
+    parser.add_argument('--bg-weight', type=float, default=-1)
     parser.add_argument('--test-suffix', default='')
     parser.add_argument('--with-gt', action='store_true')
     parser.add_argument('-v', '--validation', dest='val', type=float, default=10.0,
                         help='Percent of the data that is used as validation (0-100)')
     parser.add_argument('-i', '--checkpoint-dir')   
-    parser.add_argument('--log')
-    parser.add_argument('--target')        
+    parser.add_argument('--log')        
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
 
@@ -988,16 +996,15 @@ def my_val():
     checkpoint = torch.load(args.resume)
     # print(checkpoint['epoch'])
     # model.load_state_dict(checkpoint['state_dict'])
-    # single_model.load_state_dict(checkpoint)
+    single_model.load_state_dict(checkpoint)
     model = torch.nn.DataParallel(single_model).cuda()
-    model.load_state_dict(checkpoint['state_dict']) #TODO
     
     
-    criterion = nn.NLLLoss2d(ignore_index=-1) 
+    criterion = nn.NLLLoss2d(ignore_index=255)
 
-    score = validate(val_loader, model, criterion, eval_score=mIOU, print_freq=10, cityscape=True)
+    score = validate(val_loader, model, criterion, eval_score=accuracy, print_freq=10, cityscape=True)
     print(score)
 
 if __name__ == '__main__':
-    # main()
-    my_val()
+    main()
+    # my_val()
