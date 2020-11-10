@@ -43,13 +43,33 @@ class BasicDataset(Dataset):
         # mask = cv2.imread(mask_file[0])
         # img = cv2.imread(img_file[0])
         if self.is_train:
-            mask = np.load(mask_file[0]) + 100
+            mask = np.load(mask_file[0])
+             # TODO
+            mask[mask==2] = 0
+            mask[mask==3] = 0
+            mask[mask==5] = 0
+            mask[mask==6] = 0
+            mask[mask==8] = 0
+            mask[mask==10] = 0
+            mask[mask==11] = 0
+            mask[mask==12] = 0
+            mask[mask==13] = 0
+            mask[mask==15] = 0
+            mask[mask==16] = 0
+
+            mask[mask==4] = 2
+            mask[mask==7] = 3
+            mask[mask==9] = 4
+            mask[mask==14] = 1
+            mask[mask==17] = 3
+            ##################################################
+            mask = mask + 100
             # mask = np.expand_dims(mask, 2)
             # mask = np.concatenate((mask, mask, mask), axis=2)
             mask_PIL = Image.fromarray(mask)
             # img = np.load(img_file[0]) #TODO
             img = Image.open(img_file[0])
-            img = img.resize((1920, 1216))
+            # img = img.resize((1920, 1216)) # TODO resize is not necessary
             data = [img]
             data.append(mask_PIL)
             data = list(self.transforms(*data))
@@ -64,8 +84,28 @@ class BasicDataset(Dataset):
             return(tuple([tensor_img, torch.from_numpy(array_mask)]))
         else:
             mask = np.load(mask_file[0])
+            
+            # TODO
+            mask[mask==2] = 0
+            mask[mask==3] = 0
+            mask[mask==5] = 0
+            mask[mask==6] = 0
+            mask[mask==8] = 0
+            mask[mask==10] = 0
+            mask[mask==11] = 0
+            mask[mask==12] = 0
+            mask[mask==13] = 0
+            mask[mask==15] = 0
+            mask[mask==16] = 0
+
+            mask[mask==4] = 2
+            mask[mask==7] = 3
+            mask[mask==9] = 4
+            mask[mask==14] = 1
+            mask[mask==17] = 3
+
             img = Image.open(img_file[0])
-            img = img.resize((1920, 1216))
+            # img = img.resize((1920, 1216)) # TODO resize is not necessary
             img = np.array(img)
             img = np.transpose(img, (2,0,1))
             if img.max()>1:

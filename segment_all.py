@@ -23,10 +23,12 @@ import data_transforms as transforms
 import dataset
 
 from torch.utils.tensorboard import SummaryWriter
-from ptc_dataset import BasicDataset
+# from ptc_dataset import BasicDataset
 from dataset_trans import BasicDataset #TODO
 
 from torch.utils.data import DataLoader, random_split
+from miou import RunningConfusionMatrix
+from Synchronized_BatchNorm_PyTorch.sync_batchnorm import convert_model
 
 try:
     from modules import batchnormsync
@@ -159,12 +161,12 @@ class SegListMS(torch.utils.data.Dataset):
             assert len(self.image_list) == len(self.label_list)
 
 
-def validate(val_loader, model, criterion, eval_score=None, print_freq=10, cityscape=False):
+def validate(val_loader, model, criterion, confusion_matrix, print_freq=10, cityscape=False):
     batch_time = AverageMeter()
     losses = AverageMeter()
     score = AverageMeter()
-    pos_scores = AverageMeter()
-    neg_scores = AverageMeter()
+    score_1 = AverageMeter()
+    score_5 = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
@@ -178,50 +180,37 @@ def validate(val_loader, model, criterion, eval_score=None, print_freq=10, citys
             input = input.cuda().float()
             # target = target.cuda(async=True)
             target = target.cuda().long()
-            #TODO changed: delete variable
-            # input_var = torch.autograd.Variable(input, volatile=True)
-            # target_var = torch.autograd.Variable(target, volatile=True)
-
-
-            # compute output
-            # TODO changed
-            # output = model(input_var)[0]
-            # loss = criterion(output, target_var)
+            
             output = model(input)[0]
-            # print("model done") 
-            # print(output)
             loss = criterion(output, target)
-            # print("loss done")
 
-
-            # measure accuracy and record loss
-            # prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-            # losses.update(loss.data[0], input.size(0))
             losses.update(loss.item(), input.size(0))
             # print("model done")
-            if eval_score is not None:
-                # TODO cahnged
-                score.update(eval_score(output, target, cityscape), input.size(0))
-                pos_scores.update(posIOU(output, target, cityscape), input.size(0))
-                neg_scores.update(negIOU(output, target, cityscape), input.size(0))
-
+            confusion_matrix.update_matrix(target, output)
+            top_all, top_1, top_5 = confusion_matrix.compute_current_mean_intersection_over_union()
+            score.update(top_all, input.size(0))
+            score_1.update(top_1, input.size(0))
+            score_5.update(top_5, input.size(0))
+            
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
+            # mIoU is updated for all samples, no need to update again
             if i % print_freq == 0:
                 print('Test: [{0}/{1}]\t'
                     'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                     'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
-                    'Score {score.val:.3f} ({score.avg:.3f})\t'
-                    'pos_Score {pos_top1.val:.3f} ({pos_top1.avg:.3f})\t'
-                    'neg_Score {neg_top1.val:.3f} ({neg_top1.avg:.3f})'.format(
+                    'Score {score.val:.3f} ({score.val:.3f})\t'
+                    'Score_1 {score_1.val:.3f} ({score_1.val:.3f})\t'
+                    'Score_5 {score_5.val:.3f} ({score_5.val:.3f})\t'.format(
                     i, len(val_loader), batch_time=batch_time, loss=losses,
-                    score=score, pos_top1=pos_scores, neg_top1=neg_scores)) #TODO , flush=True
+                    score=score, score_1=score_1, score_5=score_5)) #TODO , flush=True
+                confusion_matrix.show_classes()
     
-    print(' * Score {top1.avg:.3f}\tpos_Score{pos_top1.avg:.3f}\tneg_Score{neg_top1.avg:.3f}'.format(top1=score, pos_top1=pos_scores, neg_top1=neg_scores))
+    print(' * Score {top1.val:.3f}\tScore {score_1.val:.3f}\tScore {score_5.val:.3f}'.format(top1=score, score_1=score_1, score_5=score_5))
 
-    return score.avg, losses.avg
+    return score.val, losses.avg
 
 
 class AverageMeter(object):
@@ -280,134 +269,15 @@ def recall(output, target):
     # return score.data[0]
     return score.item()
 
-def mIOU(output, target, cityscape=False):
-    _, pred = output.max(1)
-    pred = pred.view(1, -1)
-    target = target.view(1, -1)
-    if cityscape:
-        pred[torch.where(pred==1)] = 0
-        # pred[torch.where(pred==13)] = 1
-        # pred[torch.where(pred==14)] = 1
-        # pred[torch.where(pred==15)] = 1
-        # pred[torch.where(pred!=1)] = 0
-        pred[torch.where(pred==3)] = 1
-        pred[torch.where(pred==6)] = 1
-        pred[torch.where(pred==8)] = 1
-        pred[torch.where(pred!=1)] = 0
-        
-    positive_target = target[target == 1]
-    positive_pred = pred[target == 1]
-    negtive_target = target[target == 0]
-    negtive_pred = pred[target == 0]
-
-    positive_union = positive_pred.eq(positive_target)
-    positive_union = positive_union.view(-1).float().sum(0)
-
-    positive_target = target[target != -1]
-    positive_pred = pred[target != -1]
-    pos_section_pred = positive_pred.eq(1).view(-1).float().sum(0)
-    pos_section_target = positive_target.eq(1).view(-1).float().sum(0)
-    pos_intersection = pos_section_pred + pos_section_target - positive_union
-
-    if pos_intersection>0:
-        pos_score = positive_union.mul(100.0 / pos_intersection).item()
-    else:
-        pos_score = 100.0
-
-    negtive_union = negtive_pred.eq(negtive_target)
-    negtive_union = negtive_union.view(-1).float().sum(0)
-
-    negtive_target = target[target != -1]
-    negtive_pred = pred[target != -1]
-    neg_section_pred = negtive_pred.eq(0).view(-1).float().sum(0)
-    neg_section_target = negtive_target.eq(0).view(-1).float().sum(0)
-    neg_intersection = neg_section_pred + neg_section_target - negtive_union
-
-    if neg_intersection>0:
-        neg_score = negtive_union.mul(100.0 / neg_intersection).item()
-    else:
-        neg_score = 100.0
-    #print("pos", pos_score, "neg", neg_score)
-    return (pos_score + neg_score) / 2
-
-def posIOU(output, target, cityscape=False):
-    _, pred = output.max(1)
-    pred = pred.view(1, -1)
-    target = target.view(1, -1)
-    if cityscape:
-        pred[torch.where(pred==1)] = 0
-        # pred[torch.where(pred==13)] = 1
-        # pred[torch.where(pred==14)] = 1
-        # pred[torch.where(pred==15)] = 1
-        # pred[torch.where(pred!=1)] = 0
-        pred[torch.where(pred==3)] = 1
-        pred[torch.where(pred==6)] = 1
-        pred[torch.where(pred==8)] = 1
-        pred[torch.where(pred!=1)] = 0
-
-    positive_target = target[target == 1]
-    positive_pred = pred[target == 1]
-
-
-    positive_union = positive_pred.eq(positive_target)
-    positive_union = positive_union.view(-1).float().sum(0)
-
-    positive_target = target[target != -1]
-    positive_pred = pred[target != -1]
-    pos_section_pred = positive_pred.eq(1).view(-1).float().sum(0)
-    pos_section_target = positive_target.eq(1).view(-1).float().sum(0)
-    pos_intersection = pos_section_pred + pos_section_target - positive_union
-
-    if pos_intersection>0:
-        pos_score = positive_union.mul(100.0 / pos_intersection).item()
-    else:
-        pos_score = 100.0
-
-    return pos_score
-
-def negIOU(output, target, cityscape=False):
-    _, pred = output.max(1)
-    pred = pred.view(1, -1)
-    target = target.view(1, -1)
-    if cityscape:
-        pred[torch.where(pred==1)] = 0
-        # pred[torch.where(pred==13)] = 1
-        # pred[torch.where(pred==14)] = 1
-        # pred[torch.where(pred==15)] = 1
-        # pred[torch.where(pred!=1)] = 0
-        pred[torch.where(pred==3)] = 1
-        pred[torch.where(pred==6)] = 1
-        pred[torch.where(pred==8)] = 1
-        pred[torch.where(pred!=1)] = 0
-
-    negtive_target = target[target == 0]
-    negtive_pred = pred[target == 0]
-
-    negtive_union = negtive_pred.eq(negtive_target)
-    negtive_union = negtive_union.view(-1).float().sum(0)
-
-    negtive_target = target[target != -1]
-    negtive_pred = pred[target != -1]
-    neg_section_pred = negtive_pred.eq(0).view(-1).float().sum(0)
-    neg_section_target = negtive_target.eq(0).view(-1).float().sum(0)
-    neg_intersection = neg_section_pred + neg_section_target - negtive_union
-
-    if neg_intersection>0:
-        neg_score = negtive_union.mul(100.0 / neg_intersection).item()
-    else:
-        neg_score = 100.0
-    #print("pos", pos_score, "neg", neg_score)
-    return neg_score
-
 def train(train_loader, model, criterion, optimizer, epoch, lr_scheduler, writer, 
-          eval_score=None, print_freq=10):
+          confusion_matrix, print_freq=10):
     
     batch_time = AverageMeter()
     data_time = AverageMeter()
     losses = AverageMeter()
-    pos_scores = AverageMeter()
-    neg_scores = AverageMeter()
     scores = AverageMeter()
+    scores_1 = AverageMeter()
+    scores_5 = AverageMeter()
 
     global global_step
     # switch to train mode
@@ -436,20 +306,21 @@ def train(train_loader, model, criterion, optimizer, epoch, lr_scheduler, writer
         output = model(input_var)[0]
         loss = criterion(output, target_var)
         writer.add_scalar('Loss/train', loss.item(), global_step)
-        # measure accuracy and record loss
-        # prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
-        # losses.update(loss.data[0], input.size(0))
+
         losses.update(loss.item(), input.size(0))
-        if eval_score is not None:
-            scores.update(eval_score(output, target_var), input.size(0))
-            pos_scores.update(posIOU(output, target_var), input.size(0))
-            neg_scores.update(negIOU(output, target_var), input.size(0))
+
+        confusion_matrix.update_matrix(target_var, output)
+        # FIXME
+        confusion_matrix.update_matrix(target, output)
+        top_all, top_1, top_5 = confusion_matrix.compute_current_mean_intersection_over_union()
+        scores.update(top_all, input.size(0))
+        scores_1.update(top_1, input.size(0))
+        scores_5.update(top_5, input.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        # lr_scheduler.step() #TODO
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -461,10 +332,11 @@ def train(train_loader, model, criterion, optimizer, epoch, lr_scheduler, writer
                   'Data {data_time.val:.3f} ({data_time.avg:.3f})\t'
                   'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
                   'Score {top1.val:.3f} ({top1.avg:.3f})\t'
-                  'pos_Score {pos_top1.val:.3f} ({pos_top1.avg:.3f})\t'
-                  'neg_Score {neg_top1.val:.3f} ({neg_top1.avg:.3f})'.format(
-                    epoch, i, len(train_loader), batch_time=batch_time,
-                    data_time=data_time, loss=losses, top1=scores, pos_top1=pos_scores, neg_top1=neg_scores))
+                  'Score_1 {scores_1.val:.3f} ({scores_1.avg:.3f})\t'
+                  'Score_5 {scores_5.val:.3f} ({scores_5.avg:.3f})\t'.format(
+                  epoch, i, len(train_loader), batch_time=batch_time,
+                  data_time=data_time, loss=losses, top1=scores, scores_1=scores_1, scores_5=scores_5))
+            confusion_matrix.show_classes()
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
@@ -475,7 +347,6 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
 
 
 def train_seg(args):
-    writer = SummaryWriter(comment = args.log)
     batch_size = args.batch_size
     num_workers = args.workers
     crop_size = args.crop_size
@@ -490,6 +361,9 @@ def train_seg(args):
     # print(dla_up.__dict__.get(args.arch))
     single_model = dla_up.__dict__.get(args.arch)(
         classes=args.classes, down_ratio=args.down)
+    
+    single_model = convert_model(single_model)
+
     model = torch.nn.DataParallel(single_model).cuda()
     print('model_created')
     if args.edge_weight > 0:
@@ -503,10 +377,6 @@ def train_seg(args):
 
     criterion.cuda()
 
-    #data_dir = args.data_dir
-    # val_percent = args.val / 100
-    # info = dataset.load_dataset_info(data_dir)
-    # normalize = transforms.Normalize(mean=info.mean, std=info.std)
     t = []
     if args.random_rotate > 0:
         t.append(transforms.RandomRotate(args.random_rotate))
@@ -528,25 +398,14 @@ def train_seg(args):
     val_dir_mask = '/shared/xudongliu/data/argoverse-tracking/argo_track_all/val/' + args.target + '/'
     my_val = BasicDataset(val_dir_img, val_dir_mask, transforms.Compose(t_val), is_train=True)
 
-    # n_val = int(len(mydataset) * val_percent)
-    # n_train = len(mydataset) - n_val
-    # my_train, my_val = random_split(mydataset, [n_train, n_val])
+
 
     train_loader = torch.utils.data.DataLoader(
-        # SegList(data_dir, 'train', transforms.Compose(t),
-        #         binary=(args.classes == 2)),
         my_train,
         batch_size=batch_size, shuffle=True, num_workers=num_workers,
         pin_memory=True
     )
     val_loader = torch.utils.data.DataLoader(
-        # SegList(data_dir, 'val', transforms.Compose([
-        #     transforms.RandomCrop(crop_size),
-        #     # transforms.RandomHorizontalFlip(),
-        #     transforms.ToTensor(),
-        #     normalize,
-        # ]),
-        # binary=(args.classes == 2)),
         my_val, batch_size=batch_size, shuffle=False, num_workers=num_workers,pin_memory=True) #TODO  batch_size
     print("loader created")
     optimizer = torch.optim.SGD(single_model.optim_parameters(),
@@ -554,11 +413,7 @@ def train_seg(args):
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
     
-    # optimizer = torch.optim.Adam(single_model.optim_parameters(),
-    #                             args.lr,
-    #                              weight_decay=args.weight_decay) #TODO adam optimizer
-    
-    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=32) #TODO
+
     lr_scheduler = None #TODO
 
     cudnn.benchmark = True
@@ -578,21 +433,28 @@ def train_seg(args):
         else:
             print("=> no checkpoint found at '{}'".format(args.resume))
 
+    confusion_labels = np.arange(0, 5)
+    val_confusion_matrix = RunningConfusionMatrix(confusion_labels, ignore_label=-1)
+
     if args.evaluate:
-        validate(val_loader, model, criterion, eval_score=mIOU)
+        confusion_labels = np.arange(0, 2)
+        val_confusion_matrix = RunningConfusionMatrix(confusion_labels, ignore_label=-1, reduce=True)
+        validate(val_loader, model, criterion, confusion_matrix=val_confusion_matrix)
         return
+    writer = SummaryWriter(comment = args.log)
 
     # TODO test val
     # print("test val")
-    # prec1 = validate(val_loader, model, criterion, eval_score=mIOU)
+    # prec1 = validate(val_loader, model, criterion, confusion_matrix=val_confusion_matrix)
 
     for epoch in range(start_epoch, args.epochs):
+        train_confusion_matrix = RunningConfusionMatrix(confusion_labels, ignore_label=-1)
         lr = adjust_learning_rate(args, optimizer, epoch)
         print('Epoch: [{0}]\tlr {1:.06f}'.format(epoch, lr))
         # train for one epoch
         
         train(train_loader, model, criterion, optimizer, epoch, lr_scheduler,
-              eval_score=mIOU, writer=writer)
+              confusion_matrix=train_confusion_matrix, writer=writer)
 
         checkpoint_path = os.path.join(checkpoint_dir,'checkpoint_{}.pth.tar'.format(epoch))
         save_checkpoint({
@@ -602,7 +464,8 @@ def train_seg(args):
         }, is_best=False, filename=checkpoint_path)
 
         # evaluate on validation set
-        prec1, loss_val = validate(val_loader, model, criterion, eval_score=mIOU)
+        val_confusion_matrix = RunningConfusionMatrix(confusion_labels, ignore_label=-1)
+        prec1, loss_val = validate(val_loader, model, criterion, confusion_matrix=val_confusion_matrix)
         is_best = prec1 > best_prec1
         best_prec1 = max(prec1, best_prec1)
         writer.add_scalar('mIoU/epoch', prec1, epoch+1)

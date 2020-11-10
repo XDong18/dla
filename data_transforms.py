@@ -144,7 +144,7 @@ class RandomCrop(object):
             bottom = th - h - top
         if left > 0 or right > 0 or top > 0 or bottom > 0:
             label = pad_image(
-                'constant', label, top, bottom, left, right, value=255) #TODO 
+                'constant', label, top, bottom, left, right, value=99) #TODO  99
             image = pad_image(
                 'reflection', image, top, bottom, left, right)
         w, h = image.size
@@ -198,7 +198,7 @@ class RandomRotate(object):
         angle = random.randint(0, self.angle * 2) - self.angle
 
         if label is not None:
-            label = pad_image('constant', label, h, h, w, w, value=255) #TODO
+            label = pad_image('constant', label, h, h, w, w, value=99) #TODO
             label = label.rotate(angle, resample=Image.NEAREST)
             label = label.crop((w, h, w + w, h + h))
 
